@@ -1,0 +1,913 @@
+---
+title: 'NYC House Prediction for Harvard X Individual Project '
+author: "Elizabeth Peiwen Li"
+date: "June 15 2020"
+output: 
+   html_document:
+    df_print: paged
+    toc: yes
+   pdf_document:
+    fig_caption: yes
+    number_section: yes
+    toc: yes
+header-includes: \hypersetup{colorlinks=true, linkcolor=blue}
+---
+
+# Part 1 Executive Summary 
+## 1.1 Project Introduction 
+
+This project is to conduct data analysis and modeling on a dataset of real estate transaction deals within a year in New York property market. The dataset is orginally from New York City Department of Finance, https://www1.nyc.gov/site/finance/taxes/property-rolling-sales-data.page . On their website, the Department of Finance’s Rolling Sales files lists properties that sold in a twelve-month period from September 2016 to September 2017 in New York City for all tax classes. This dataset is a concatenated and slightly cleaned-up version provided in kaggle. The dataset contains both continuous and categorical data, including the sales prices, building locations, building types over 12 months periods.In this project, all variables have been analyzed and studied, and 4 data models have been introduced, studied and compared. 
+
+
+## 1.2 Project Goals 
+
+The objectives of this project is to build and compare with the models predicting property sales price in New York City, and find a better model suitable for real estate transaction price prediction. 
+
+
+# Part 2 Method & Analysis 
+## 2.1 Dataset & Analysis Methods Summary 
+
+To smoothly carry forward this project, there will be 3 major steps:
+
+*Step1: Download the dataset, explore the dataset and clean the data for further analysis. 
+
+*Step2: Split the cleaned dataset into training and testing datasets. Conduct exploratory data analysis (EDA) on training dataset, learn more about each variable and its distribution. 
+
+*Step3: Choose variables for data modeling, build data models on training dataset, and test the model on testing dataset. Root Mean Square Error (RMSE) will be used to analyze and compare the result of the models. 
+
+
+## 2.2 Data Analysis 
+
+### 2.2.1 Data Loading & Wrangling 
+
+
+```{r warning=FALSE, include=FALSE}
+# Load packages 
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(cowplot)
+library(corrplot)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(Metrics)
+library(radiant)
+options(scipen = 999)
+```
+
+#### NYC Housing Sales Dataset Loading 
+
+```{r echo=TRUE}
+nyc_property_original <- read_csv("nyc-rolling-sales.csv")
+nyc_property <- nyc_property_original
+```
+
+#### Dataset Glimpse
+
+```{r}
+
+glimpse(nyc_property)
+
+```
+BOROUGH: A digit code for the borough area. The codes are Manhattan (1), Bronx (2), Brooklyn (3), Queens (4), and Staten Island (5).
+
+
+#### Data Type Transformation
+```{r}
+# After have a glimpse of the data, the hour and minute part was removed from the sale date column because they are all zero.
+
+nyc_property$SALE_DATE <- gsub( " .*$", "", nyc_property$SALE_DATE )
+
+# Variable data type change
+
+nyc_property$BOROUGH <- as.character(nyc_property$BOROUGH)
+nyc_property$ZIP_CODE <- as.character(nyc_property$ZIP_CODE)
+nyc_property$TAX_CLASS_AT_TIME_OF_SALE <- as.character(nyc_property$TAX_CLASS_AT_TIME_OF_SALE)
+nyc_property$SALE_PRICE <- as.numeric(nyc_property$SALE_PRICE)
+nyc_property$LAND_SQUARE_FEET <- as.numeric(nyc_property$LAND_SQUARE_FEET)
+nyc_property$GROSS_SQUARE_FEET <- as.numeric(nyc_property$GROSS_SQUARE_FEET)
+nyc_property <- nyc_property%>%mutate_if(is.integer,as.numeric)
+
+# Remove irrelavant variable
+nyc_property$APARTMENT_NUMBER<- NULL
+nyc_property$ADDRESS <- NULL # Location is represented by other more informative varaibles like BOROUGH, NEIGHBORHOOD and ZIPCODE
+```
+
+
+```{r}
+glimpse(nyc_property)
+```
+
+#### Outcome Variable Check - Sale Price
+
+```{r}
+summary(nyc_property$SALE_PRICE,na.rm = TRUE)
+```
+
+
+```{r warning=FALSE}
+
+# Distribution plot on log scale
+nyc_property%>%
+  filter(SALE_PRICE> 0)%>%
+  ggplot(aes(x =SALE_PRICE))+
+  geom_density(fill = "#6699cc",alpha = 0.8)+
+  theme_classic()+
+  scale_x_log10()
+
+```
+```{r}
+quantile(nyc_property$SALE_PRICE,na.rm = TRUE,0.995)
+```
+
+
+Those outlier high price properties are skycrapers,office building or a whole apartment building. While most of the extreme low property price(Many of those have a nonsensically small dollar amount: $0 most commonly. These sales are actually transfers of deeds between parties: for example, parents transferring ownership to their home to a child after moving out for retirement.
+
+Records having sale price below than 10000 will be removed from the dataset because most of them are not fair market price. Only property with sale price within 99.5% quanitle(<= 20309325) will be used in later analysis so that the independent variable is more balanced. Also, records which do not have sales price will also be removed from the dataset because sale price is the outcome variable of this project.
+
+#### Data Cleaning - Remove Outliers Of Outcome Variables
+
+```{r}
+
+# Remove outliers
+nyc_property_subset <- 
+  nyc_property%>%
+  filter(!is.na(SALE_PRICE) & SALE_PRICE>= 10000 & SALE_PRICE <= 20309325 )
+
+# Distribution plot on log scale
+nyc_property_subset%>%
+  ggplot(aes(x=SALE_PRICE))+
+  geom_density(fill = "#6699cc",alpha = 0.8)+
+  theme_classic()+
+  scale_x_log10()
+```
+
+
+#### Data Summary
+
+#### Categorical Variables
+```{r}
+nonNumeric_variable <- nyc_property_subset %>% select_if(negate(is.numeric))
+records_have_value = sapply(nonNumeric_variable, function(x) sum(!is.na(x)))
+populated = round(records_have_value/nrow(nyc_property_subset),2)
+unique_values = sapply(nonNumeric_variable,n_distinct)
+calculate_mode <- function(x) {
+  uniqx <- unique(na.omit(x))
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+
+
+most_common_values = sapply(nonNumeric_variable,calculate_mode)
+dataSummaryNonnum <- data.frame(records_have_value,populated,unique_values,most_common_values)
+dataSummaryNonnum
+
+```
+
+The table above shows that EASE_MENT is a invalid column, and also suggests BUILDING_CLASS_AT_PRESENT and BUILDING_CLASS_AT_TIME_OF_SALE has the same number of unique value, therefore, we can check what is the relationship between the two variables.
+
+##### Remove Invalid Column - EASE_MENT
+
+```{r}
+nyc_property_subset$EASE_MENT <- NULL
+nonNumeric_variable$EASE_MENT <- NULL
+```
+
+##### Check BUILDING_CLASS_AT_PRESENT and BUILDING_CLASS_AT_TIME_OF_SALE 
+
+```{r}
+# Check if the two variables have the same unique value
+unique(nyc_property_subset$BUILDING_CLASS_AT_PRESENT)[!(unique(nyc_property_subset$BUILDING_CLASS_AT_PRESENT) %in% unique(nyc_property_subset$BUILDING_CLASS_AT_TIME_OF_SALE))]
+
+# Check if the two variables are the same in each record
+
+length(which(nyc_property_subset$BUILDING_CLASS_AT_PRESENT!= nyc_property_subset$BUILDING_CLASS_AT_TIME_OF_SALE))
+```
+
+Out of 58115 records, only 121 properties BUILDING_CLASS_AT_PRESENT is different from BUILDING_CLASS_AT_TIME_OF_SALE. Thus, we can create a new variable called BUILDING_CLASS_STATUS_CHANGE to demonstrate this status change instead of including both 
+BUILDING_CLASS_AT_PRESENT and BUILDING_CLASS_AT_TIME_OF_SALE. I choose to keep BUILDING_CLASS_AT_TIME_OF_SALE because it is fully populated and can better represent the property status at time of sale.
+
+##### Create BUILDING_CLASS_STATUS_CHANGE
+
+```{r}
+nyc_property_subset$BUILDING_CLASS_STATUS_CHANGE <- "0"
+nyc_property_subset$BUILDING_CLASS_STATUS_CHANGE[which(nyc_property_subset$BUILDING_CLASS_AT_PRESENT!= nyc_property_subset$BUILDING_CLASS_AT_TIME_OF_SALE)] <- "1"
+nyc_property_subset$BUILDING_CLASS_AT_PRESENT <- NULL
+```
+
+
+##### Fill Missing Values
+
+```{r}
+# Set NA Value to mode value for modeling purpose
+
+nyc_property_subset$TAX_CLASS_AT_PRESENT[is.na(nyc_property_subset$TAX_CLASS_AT_PRESENT)] <- "2"
+
+nonNumeric_variable <- nyc_property_subset %>% select_if(negate(is.numeric))
+records_have_value = sapply(nonNumeric_variable, function(x) sum(!is.na(x)))
+populated = round(records_have_value/nrow(nyc_property_subset),2)
+unique_values = sapply(nonNumeric_variable,n_distinct)
+calculate_mode <- function(x) {
+  uniqx <- unique(na.omit(x))
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+
+
+most_common_values = sapply(nonNumeric_variable,calculate_mode)
+dataSummaryNonnum <- data.frame(records_have_value,populated,unique_values,most_common_values)
+dataSummaryNonnum
+```
+
+
+#### Numeric Variables
+```{r}
+numeric_variable <- nyc_property_subset %>% select_if(is.numeric)
+records_have_value = sapply(numeric_variable, function(x) sum(!is.na(x)))
+populated = round(records_have_value/nrow(nyc_property_subset),2)
+number_of_zero_value = sapply(numeric_variable,function(x) sum(x == 0,na.rm = TRUE))
+minvalues <- sapply(numeric_variable,function(x) {min(x,na.rm = TRUE)})
+meanvalues <- round(sapply(numeric_variable,function(x) {mean(x,na.rm = TRUE)}),2)
+maxvalues <- sapply(numeric_variable,function(x) {max(x,na.rm = TRUE)})
+
+dataSummaryNum <- data.frame(records_have_value,populated,number_of_zero_value,minvalues,meanvalues,maxvalues)
+dataSummaryNum
+```
+
+The table above shows that there are missing values in LAND SQUARE FEET and GROSS SQUARE FEET, I will replace them with 0 as Unknown. 
+
+```{r}
+nyc_property_subset$LAND_SQUARE_FEET[is.na(nyc_property_subset$LAND_SQUARE_FEET)] <- 0
+
+nyc_property_subset$GROSS_SQUARE_FEET[is.na(nyc_property_subset$GROSS_SQUARE_FEET)] <- 0
+
+nyc_property_subset$YEAR_BUILT[is.na(nyc_property_subset$YEAR_BUILT)] <- 0
+```
+
+### 2.2.2  Generate Training and Testing Datasets 
+
+#### Training/Testing Data Split
+```{r echo=TRUE}
+spec = c(train = .75, test = .25)
+
+set.seed(1)
+
+g = sample(cut(
+  seq(nrow(nyc_property_subset)), 
+  nrow(nyc_property_subset)*cumsum(c(0,spec)),
+  labels = names(spec)
+))
+
+res = split(nyc_property_subset, g)
+
+Training <- res$train
+Testing <- res$test
+```
+
+```{r}
+str(Training)
+nrow(Testing)
+```
+
+#### Training/Testing Data Level Check
+```{r echo=TRUE}
+# For variable levels that are in testing dataset and not in training dataset, I will set it's value to mode
+
+prepTest <- function(x)
+  {
+    for (i in unique(Testing[[x]]))
+     {
+      if(!(i%in% unique(Training[[x]])))
+        {
+          return(x)
+      }
+  }
+}
+
+uniqueTest <- unlist(lapply(colnames(nonNumeric_variable),prepTest))
+
+Testing$NEIGHBORHOOD[!(Testing$NEIGHBORHOOD %in% unique(Training$NEIGHBORHOOD))] <- "FLUSHING-NORTH"
+
+Testing$BUILDING_CLASS_CATEGORY[!(Testing$BUILDING_CLASS_CATEGORY %in% unique(Training$BUILDING_CLASS_CATEGORY))] <- "01 ONE FAMILY DWELLINGS"
+
+Testing$ZIP_CODE[!(Testing$ZIP_CODE %in% unique(Training$ZIP_CODE))] <- "10314"
+
+Testing$BUILDING_CLASS_AT_TIME_OF_SALE[!(Testing$BUILDING_CLASS_AT_TIME_OF_SALE %in% unique(Training$BUILDING_CLASS_AT_TIME_OF_SALE))] <- "D4"
+
+```
+
+
+
+### 2.2.3  Exploratory Data Analysis (EDA) On Traning Dataset
+
+#### Categorical Variable Distributions
+
+#### Borough
+Manhattan (1), Bronx (2), Brooklyn (3), Queens (4), Staten Island (5)
+
+```{r}
+
+histPlot <- Training%>%
+            filter(!is.na(BOROUGH))%>%
+            group_by(BOROUGH)%>%
+            ggplot(aes(x = BOROUGH))+
+            geom_bar(stat = "count",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+
+corrPlot <- Training%>%
+            filter(!is.na(BOROUGH))%>%
+            group_by(BOROUGH)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x = BOROUGH,y = avg_sale_price))+
+            geom_bar(stat = "identity",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+
+    
+  
+plot_grid(histPlot,corrPlot,nrow = 1)
+```
+
+The above plots shows that Borough 1,3 and 4 have the most of the sales, and location has an impact on the property sale price, borough 1 (Manhattan's average house price is way higher than other borough areas).
+
+#### NEIGHBORHOOD
+```{r}
+Training%>%
+  group_by(NEIGHBORHOOD)%>%
+  summarise(quantity = length(NEIGHBORHOOD),avg_sale_price = mean(SALE_PRICE))%>%
+  arrange(desc(quantity))
+```
+From above, we can learn that, the best selling neighborhoods (Top5) are Flushing-North, Upper East Side (59-79,79-96),Upper West Side (59-79), and Midtown East. 
+
+```{r}
+Training%>%
+  group_by(NEIGHBORHOOD)%>%
+  summarise(quantity = length(NEIGHBORHOOD),avg_sale_price = mean(SALE_PRICE))%>%
+  arrange(desc(avg_sale_price))
+```
+From above, we can learn that, the neighborhood which have highest average sales prices (Top5) are East River, Civic Center, Bloomfield, Little Italy and Soho. 
+
+#### BUILDING CLASS CATEGORY
+```{r}
+Training%>%
+  group_by(BUILDING_CLASS_CATEGORY)%>%
+  summarise(quantity = length(BUILDING_CLASS_CATEGORY),avg_sale_price = mean(SALE_PRICE))%>%
+  arrange(desc(quantity))
+```
+From above, we can learn that more common building classes sold in Borough are one family dwellings, Coops- Elevator Apartments, Condo - Elevator Apartment, and two family dwellings. 
+
+#### Tax Class At Present
+
+Every property in the city is assigned to one of four tax classes (Classes 1, 2, 3, and 4),based on the use of the property.
+
+```{r}
+
+histPlot <- Training%>%
+            filter(!is.na(TAX_CLASS_AT_PRESENT))%>%
+            group_by(TAX_CLASS_AT_PRESENT)%>%
+            ggplot(aes(x = TAX_CLASS_AT_PRESENT))+
+            geom_bar(stat = "count",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+
+corrPlot <- Training%>%
+            filter(!is.na(TAX_CLASS_AT_PRESENT))%>%
+            group_by(TAX_CLASS_AT_PRESENT)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x = TAX_CLASS_AT_PRESENT,y = avg_sale_price))+
+            geom_bar(stat = "identity",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+
+    
+  
+plot_grid(histPlot,corrPlot,nrow = 1)
+```
+The majority of sold properties are in Class 1 and class 2. And the average sales price in Class 2B is the highest. The average sales price in Class 2B is the second highest.
+
+#### Zip Code
+
+```{r}
+Training%>%
+  group_by(ZIP_CODE)%>%
+  summarise(quantity = length(ZIP_CODE),avg_sale_price = mean(SALE_PRICE))%>%
+  arrange(desc(quantity))
+```
+Among 181 zip codes in Borough NewYork,the top 5 selling zip code are 11354,10314,11201,11375 and 10011. 
+
+```{r}
+Training%>%
+  group_by(ZIP_CODE)%>%
+  summarise(quantity = length(ZIP_CODE),avg_sale_price = mean(SALE_PRICE))%>%
+  arrange(desc(avg_sale_price))%>%head()
+```
+Among 181 zip codes in Borough NewYork,the top 5 average sales price zip code are 10013,10007,10018,10069,10037. And the highest average sales price is $5314647. 
+
+
+#### Tax Class At Time Of Sale
+```{r}
+
+histPlot <- Training%>%
+            filter(!is.na(TAX_CLASS_AT_TIME_OF_SALE))%>%
+            group_by(TAX_CLASS_AT_TIME_OF_SALE)%>%
+            ggplot(aes(x = TAX_CLASS_AT_TIME_OF_SALE))+
+            geom_bar(stat = "count",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+
+corrPlot <- Training%>%
+            filter(!is.na(TAX_CLASS_AT_TIME_OF_SALE))%>%
+            group_by(TAX_CLASS_AT_TIME_OF_SALE)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x = TAX_CLASS_AT_TIME_OF_SALE,y = avg_sale_price))+
+            geom_bar(stat = "identity",fill = "#6699cc",alpha = 0.8)+
+            theme_classic()
+  
+plot_grid(histPlot,corrPlot,nrow = 1)
+```
+
+There are 4 different Tax Class At Time Of Sale value, but the Tax Class At Time Of Sale of three only has 4 record out of 84548 observations in the original dataset, and has been removed when deleting sale price outliers. Most tax class are class 1 and 2, however class 4 has the highest average sales price. 
+
+#### BUILDING CLASS AT TIME OF SALE	
+
+```{r fig.width= 8}
+Training%>%
+    group_by(BUILDING_CLASS_AT_TIME_OF_SALE)%>%
+    summarise(quantity = length(BUILDING_CLASS_AT_TIME_OF_SALE),
+              avg_sale_price =   mean(SALE_PRICE))%>%
+    arrange(desc(quantity))
+```
+Building Class D4, R4, A1, A5 and B2 are the building classes with the top sales. 
+
+#### SALE Amount and Price across the time 
+
+```{r}
+Training$SALE_DATE <- as.Date(Training$SALE_DATE, format = "%m/%d/%y")
+Training$SALE_YEAR <-  format(Training$SALE_DATE,"%y")
+Training$SALE_Month <- format(Training$SALE_DATE,"%m/%y")
+  Training%>%
+    group_by(SALE_YEAR)%>%
+    summarise(quantity = length(SALE_YEAR),avg_sale_price = mean(SALE_PRICE))%>%
+    arrange(desc(quantity))
+```
+
+
+```{r}
+  Training%>%
+    group_by(SALE_Month)%>%
+    summarise(quantity = length(SALE_Month),avg_sale_price = mean(SALE_PRICE))%>%as.data.frame()%>%ggplot(aes(x=SALE_Month,y = quantity))+geom_point()
+```
+From above, we can learn that the last month of every quarter had the highest sales amounts, maybe because of the pressure of the sales target. 
+
+There's no obvious seasonal trend.  We can delete it from the training set in later analysis. 
+
+```{r}
+Training$SALE_Month <- NULL
+Training$SALE_YEAR <- NULL
+Training$SALE_DATE <- NULL
+Testing$SALE_DATE <- NULL
+```
+
+
+#### Numeric Variable Distributions
+
+#### RESIDENTIAL UNITS
+```{r}
+summary(Training$RESIDENTIAL_UNITS)
+```
+
+
+```{r warning=FALSE}
+
+histPlot <- Training%>%
+            filter(!is.na(RESIDENTIAL_UNITS))%>%
+            ggplot(aes(x=RESIDENTIAL_UNITS))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_log10()
+
+corrPlot <- Training%>%
+            group_by(RESIDENTIAL_UNITS)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x= RESIDENTIAL_UNITS, y = avg_sale_price ))+
+            geom_point(color = "#6699cc")+
+            geom_line(aes(group = 1),linetype = 'dotted')+
+            theme_classic()+
+            scale_x_log10()
+plot_grid(histPlot,corrPlot,nrow = 2)
+
+
+```
+
+The plot above shows the residential units has a positive relationship with sale price when the number of units is lower than 100. 
+
+#### COMMERCIAL UNITS
+
+```{r}
+summary(Training$COMMERCIAL_UNITS)
+```
+
+```{r warning=FALSE}
+
+histPlot <- Training%>%
+            filter(!is.na(COMMERCIAL_UNITS))%>%
+            ggplot(aes(x=COMMERCIAL_UNITS))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_log10()
+
+corrPlot <- Training%>%
+            group_by(COMMERCIAL_UNITS)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x= COMMERCIAL_UNITS, y = avg_sale_price))+
+            geom_point(color = "#6699cc")+
+            geom_line(aes(group = 1),linetype = 'dotted')+
+            theme_classic()+
+            scale_x_log10()
+
+plot_grid(histPlot,corrPlot,nrow = 2)
+```
+
+The plot above shows the majority of the commerical units is below 10, and it has a positive relationship when the number of units is lower than 10. 
+
+#### TOTAL UNITS
+
+```{r}
+summary(Training$TOTAL_UNITS)
+
+```
+
+```{r warning=FALSE}
+
+histPlot <- Training%>%
+            filter(!is.na(TOTAL_UNITS))%>%
+            ggplot(aes(x=TOTAL_UNITS))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_log10()
+
+corrPlot <- Training%>%
+            group_by(TOTAL_UNITS)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x= TOTAL_UNITS, y = avg_sale_price ))+
+            geom_point(color = "#6699cc")+
+            geom_line(aes(group = 1),linetype = 'dotted')+
+            theme_classic()+
+            scale_x_log10()
+plot_grid(histPlot,corrPlot,nrow = 2)
+```
+
+The plot above shows the total units has a positive relationship with sale price when the number of units is lower than 100.  is lower than 100.
+
+#### LAND SQUARE FEET
+
+
+```{r warning=FALSE}
+summary(Training$LAND_SQUARE_FEET)
+
+```
+
+```{r}
+histPlot <- Training%>%
+            filter(LAND_SQUARE_FEET > 0)%>%
+            ggplot(aes(x=LAND_SQUARE_FEET))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_log10()
+
+corrPlot <- Training%>%
+            filter(LAND_SQUARE_FEET > 0)%>%
+            ggplot(aes(x= LAND_SQUARE_FEET, y = SALE_PRICE))+
+            geom_point(color = "#6699cc")+
+            theme_classic()+  
+            scale_x_log10()
+
+plot_grid(histPlot,corrPlot,nrow = 2)
+```
+
+
+Most of houses have a land square feet between 1000 and 10000, and there is no clear correlation between land square feet and sale price.
+
+
+#### GROSS SQUARE FEET	
+
+```{r}
+summary(Training$GROSS_SQUARE_FEET,na.rm = TRUE)
+```
+
+
+```{r warning=FALSE}
+
+histPlot <- Training%>%
+            filter(GROSS_SQUARE_FEET>0)%>%
+            ggplot(aes(x=GROSS_SQUARE_FEET))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_log10()
+
+corrPlot <- Training%>%
+            filter(GROSS_SQUARE_FEET>0)%>%
+            ggplot(aes(x= GROSS_SQUARE_FEET, y = SALE_PRICE))+
+            geom_point(color = "#6699cc")+
+            theme_classic()+  
+            scale_x_log10()
+
+plot_grid(histPlot,corrPlot,nrow = 2)
+
+```
+
+Most of houses have a land square feet between 1000 and 100000, and there is a slightly positive correlation between gross square feet and sale price.
+
+
+#### YEAR BUILT	
+
+```{r}
+summary(Training$YEAR_BUILT)
+```
+
+```{r warning=FALSE}
+histPlot <- Training%>%
+            filter(YEAR_BUILT >= 1800)%>%
+            ggplot(aes(x=YEAR_BUILT))+
+            geom_density(fill = "#6699cc",alpha = 0.8)+
+            theme_classic()+
+            scale_x_continuous(breaks=c(1800,1820,1840,1860,1880,1900,1920,1940,1960,1980,2000,2017),
+            labels=c("1800","1820","1840","1860","1880", "1900", "1920","1940","1960","1980","2000","2017"))
+
+corrPlot <- Training%>%
+            filter(YEAR_BUILT >= 1800)%>%
+            group_by(YEAR_BUILT)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x= YEAR_BUILT, y = avg_sale_price  ))+
+            geom_point(color = "#6699cc")+
+            theme_classic()+
+            scale_x_continuous(breaks=c(1800,1820,1840,1860,1880,1900,1920,1940,1960,1980,2000,2017),
+            labels=c("1800","1820","1840","1860","1880", "1900", "1920","1940","1960","1980","2000","2017"))
+
+plot_grid(histPlot,corrPlot,nrow = 2)
+
+
+
+```
+
+From the plot above, we can see that most of sold properties are built after 1900. It is hard to see the trend clearly from the scatter plot above, therefore, let's create a new group for year built called year built class, each class include 10 years.
+
+
+```{r}
+Training%>%
+            mutate(year_built_class = cut(YEAR_BUILT,breaks = seq(1799,2020,10),
+                                           labels=c("1810","1820","1830","1840","1850","1860","1870","1880","1890",
+                                                    "1900","1910","1920","1930","1940","1950","1960","1970","1980","1990",
+                                                     "2000","2010","2017")))%>%
+            filter(!is.na(year_built_class))%>%
+            group_by(year_built_class)%>%
+            summarise(avg_sale_price = mean(SALE_PRICE))%>%
+            ggplot(aes(x= year_built_class, y = avg_sale_price  ))+
+            geom_point(color = "#6699cc")+
+            geom_line(aes(group = 1),linetype = 'dotted')+
+            theme_classic()
+```
+
+From this plot above, we can see that the average house price has a down trend from 1810 to 1960, and start to increase after 1960.
+
+
+### 2.2.4 Data Exploratory Analysis Summary 
+
+From above data exploratory analysis on the training set, we can get some insights as follows: 
+
+1. Among five areas of Borough: Manhattan (1), Bronx (2), Brooklyn (3), Queens (4), Staten Island (5), Manhattan, Brooklyn, and Queens are more popular, and sold more properties. The average sales price in Manhattan is much higher than other areas.
+
+2. The top selling neighborhood in New York Borough are: Flushing-North, Upper East Side (59-79,79-96),Upper West Side (59-79), and Midtown East, and the top selling zip codes are  11354,10314,11201,11375 and 10011. 
+
+3. The most expensive neighborhoods are East River, Civic Center, Bloomfield, Little Italy and Soho. The most expensive zip codes are 10013,10007,10018,10069,10037. And the highest average sales price is around $531,4647. 
+
+4. The top selling property types/classes in Borough are one family dwellings, Coops- Elevator Apartments, Condo - Elevator Apartment, and two family dwellings. 
+
+5. The majority of sold properties are in Tax Class 1 and Tax class 2. And the average sales price in Tax Class 2B is the highest. The average sales price in TaxClass 4 is the second highest.
+
+6. In the training dataset, the sales prices has a positive relationship with the following variables:  the residential units when the number of units is lower than 100; the commercial units when the number of units is lower than 10; the total units when the number of units is lower than 100; and the sales prices has a slightly positive relationship correlation with gross square feet.There is no clear correlation between the sales price and the sales time and building ages. 
+
+
+
+
+## 2.3  Data Modeling 
+
+
+#### Correlation Check
+Correlation Check on numerical variables 
+```{r}
+Training.cor <- cor(Training%>%select_if(is.numeric))
+corrplot(Training.cor)
+```
+
+This plot shows the correlation among the variables. Since TOTAL_UNITS is the sum of both RESIDENTIAL_UNITS and COMMERCIAL_UNITS, I will use TOTAL_UNITS for later modeling. TOTAL_UNITS has a strong correlation with  GROSS_SQUARE_FEET, therefore, it will not be included in the following linear model.
+
+Combined with previous EDA on training dataset and correlation on continuous variables, I will choose the four variables for later modeling: 1) continous variable: TOTAL_UNITS,LAND_SQUARE_FEET; 2) categorical variable: ZIP_CODE, BUILDING_CLASS_AT_TIME_OF_SALE. 
+  
+### 2.3.1 Linear Regression Model
+
+#### Build Linear Model 
+```{r}
+myControl = trainControl(method = "cv", number = 5, verboseIter = TRUE)
+model_lm = train(SALE_PRICE ~ TOTAL_UNITS + LAND_SQUARE_FEET,
+              data = Training,
+              method = "lm",
+              trControl = myControl)
+```
+
+```{r}
+model_lm
+```
+
+Define RMSE function 
+```{r}
+RMSE <- function(true_price, predicted_price) {
+  sqrt(mean((true_price-predicted_price)^2))
+}
+```
+
+#### RMSE of Linear Model on Testing Dataset 
+```{r}
+pre_price_lm <- predict(model_lm,Testing)
+RMSE_lm <- rmse(Testing$SALE_PRICE,pre_price_lm)
+RMSE_lm
+```
+
+### 2.3.2 Logical Regression Model 
+
+#### Build Logistic Regression  Model 
+
+```{r}
+myControl = trainControl(method = "cv", number = 5, verboseIter = TRUE)
+model_glm = train(SALE_PRICE ~ TOTAL_UNITS + LAND_SQUARE_FEET +factor(ZIP_CODE)+factor(BUILDING_CLASS_AT_TIME_OF_SALE), 
+              data = Training,
+              method = "glm",
+              trControl = myControl)
+model_glm
+```
+
+
+#### RMSE of Logistic Model on Testing Dataset 
+```{r}
+pre_price_glm <- predict(model_glm,Testing)
+RMSE_glm <- rmse(Testing$SALE_PRICE,pre_price_glm)
+RMSE_glm
+```
+
+### 2.3.3 Regression Tree Model
+
+#### Build Regression Tree Model 
+```{r}
+library(rpart)
+model_retree <- rpart(
+  formula = SALE_PRICE ~ TOTAL_UNITS + LAND_SQUARE_FEET +factor(ZIP_CODE)+factor(BUILDING_CLASS_AT_TIME_OF_SALE),
+  data    = Training,
+  method  = "anova"
+  )
+```
+
+
+```{r}
+plotcp(model_retree)
+```
+
+```{r}
+model_retree$cptable
+```
+
+#### Tuning 
+```{r}
+hyper_grid <- expand.grid(
+  minsplit = seq(5, 20, 1),
+  maxdepth = seq(8, 15, 1)
+)
+
+models <- list()
+
+for (i in 1:nrow(hyper_grid)) {
+  minsplit <- hyper_grid$minsplit[i]
+  maxdepth <- hyper_grid$maxdepth[i]
+
+  # train a model and store in the list
+  models[[i]] <- rpart(
+  formula = SALE_PRICE ~ TOTAL_UNITS + LAND_SQUARE_FEET +factor(ZIP_CODE)+factor(BUILDING_CLASS_AT_TIME_OF_SALE),
+  data    = Training,
+  method  = "anova",
+    control = list(minsplit = minsplit, maxdepth = maxdepth)
+    )
+}
+```
+
+```{r}
+get_cp <- function(x) {
+  min <- which.min(x$cptable[, "xerror"])
+  cp <- x$cptable[min, "CP"] 
+}
+
+get_min_error <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  xerror <- x$cptable[min, "xerror"] 
+}
+
+hyper_grid %>%
+  mutate(
+    cp    = purrr::map_dbl(models, get_cp),
+    error = purrr::map_dbl(models, get_min_error)
+    ) %>%
+  arrange(error) %>%
+  top_n(-5, wt = error)
+
+```
+
+```{r}
+op_model_retree <- rpart(
+  formula = SALE_PRICE ~ TOTAL_UNITS + LAND_SQUARE_FEET +factor(ZIP_CODE)+factor(BUILDING_CLASS_AT_TIME_OF_SALE),
+  data    = Training,
+  method  = "anova",
+    control = list(minsplit = 19, maxdepth = 12, cp = 0.01)
+    )
+```
+
+
+#### RMSE of Regression Tree Model on Testing Dataset 
+```{r}
+pre_price_retree <- predict(op_model_retree,Testing)
+RMSE_retree <- rmse(Testing$SALE_PRICE,pre_price_retree)
+RMSE_retree
+
+```
+
+
+### 2.3.4 Model Ensemble 
+
+Ensemble Linear and Regression Tree 
+```{r}
+pre_price_em <- (pre_price_retree + pre_price_glm)/2
+RMSE_em <- rmse(Testing$SALE_PRICE,pre_price_em)
+RMSE_em
+
+```
+
+
+# Part 3  Model Results & Performance on Testing Dataset
+
+```{r}
+modelname <-c("Linear","Logistic Regression","Regression Tree","Emsenble" )
+rsme_result <- data.frame(model=modelname,rsme= c(RMSE_lm,RMSE_glm,RMSE_retree,RMSE_em))
+print(rsme_result)
+
+```
+For all the models, we can know that the emsenble model of both Logistic Regression and Regression Tree, has the best result. And the RSME is 1367718. 
+
+
+
+# Part 4 Conclusions
+
+## 4.1 Lesson Learned 
+
+From this project, we can learn more about property market in New York City: 
+
+1. For real estate, the key factor is always location, location and location! As we can see from previous explorotary data analysis, the majorities of deals and highest average sales prices happened in Mahatton and Brooklyn, the hottest places in New York. 
+
+2. Most properties sold are residential properties. Only around 4% of transactions are commercial properties.Therefore, we can learn that, the residential market was very active during that period. There were strong needs for individual residential buyers instead of institutional commercial buyers. 
+
+3. The sales prices in this dataset are in a very big range,since the sales price is affected by its area, locations, ages, building type. 
+
+4. The RSME of the model is very large: $136,7118, which indicate to get a better result, more data and varialbes need be introduced for further analysis. 
+
+
+## 4.2 Limitation & Future Work 
+
+As mentioned previously, though all real property transactions have a big number, for this dataset the max sales price is 22 mission dollars, the RSME of $136,7118 is still too large. One of the reasons is, though the dataset originally contains 19 variables, most of them are highly correlated. For example,in fact, zip_code include all the information in area and neighborhood, building type contains the differences of tax classes. Gross Square feet is highly correlated with land square feet, because the zoning code is regulated by the government which set the rules of floor area ratio. 
+
+To build a better model to predict the sales prices, more variables and data for longer periods need to be introduced. For example, in the same zip code, with the same building type and similar scale of building, the prices can vary a lot, sometimes definitely over a million dollars. If the building is designed by a world known designer or represented by a super star, then its valuation is a lot higher than the average. 
+
+
+
+# Glossary Of Terms
+
+**Borough:** The name of the borough in which the property is located. 
+
+**Zip Code:** The property’s postal code. 
+
+**Residential Units:** The number of residential units at the listed property.
+
+**Commercial Units:** The number of commercial units at the listed property.
+
+**Total Units:** The total number of units at the listed property.
+
+** Land Square Feet:** The land area of the property listed in square feet.
+
+** Gross Square Feet:** The total area of all the floors of a building as measured from the exterior surfaces of the outside walls of the building, including the land area and space within any building or structure on the property. 
+
+**Tax class:** 
+
+Class 1: Includes most residential property of up to three units (such as one-,two-, and three-family homes and small stores or offices with one or two attached apartments), vacant land that is zoned for residential use, and most condominiums  that are not more than three stories.
+
+Class 2: Includes all other property that is primarily residential, such as cooperatives and condominiums.
+
+Class 3: Includes property with equipment owned by a gas, telephone or electric company.
+
+Class 4: Includes all other properties not included in class 1,2, and 3, such as offices, factories, warehouses,garage buildings, etc.
+
+**Building Class at Time of Sale:**
+
+The Building Classification is used to describe a property’s constructive use. The first position of the Building Class is a letter that is used to describe a general class of properties (for example “A” signifies one-family homes, “O” signifies office buildings. “R” signifies condominiums). The second position, a number, adds more specific information about the property’s use or construction style (using our previous examples “A0” is a CapeCod style one family home, “O4” is a tower type office building and “R5” is a commercialcondominium unit). The term Building Class as used by the Department of Finance isinterchangeable with the term Building Code as used by the Department of Buildings. 
+
+
