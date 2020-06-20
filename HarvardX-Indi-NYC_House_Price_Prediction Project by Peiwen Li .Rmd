@@ -60,6 +60,8 @@ options(scipen = 999)
 #### NYC Housing Sales Dataset Loading 
 
 ```{r echo=TRUE}
+download.file("https://raw.github.com/morris4321/nyc_realestate_salesprice/master/nyc-rolling-sales.csv", destfile = "/Users/elizabethli/nyc_property_salesprice_prediction/nyc-rolling-sales.csv")
+setwd("/Users/elizabethli/nyc_property_salesprice_prediction")
 nyc_property_original <- read_csv("nyc-rolling-sales.csv")
 nyc_property <- nyc_property_original
 ```

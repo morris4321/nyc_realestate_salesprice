@@ -42,9 +42,9 @@ options(scipen = 999)
 
 # Data Loading 
 
-setwd()
+download.file("https://raw.github.com/morris4321/nyc_realestate_salesprice/master/nyc-rolling-sales.csv", destfile = "/Users/elizabethli/nyc_realestate_salesprice/nyc-rolling-sales.csv")
+setwd("/Users/elizabethli/nyc_realestate_salesprice")
 nyc_property_original <- read_csv("nyc-rolling-sales.csv")
-nyc_property <- nyc_property_original
 
 # Data Glimpse 
 glimpse(nyc_property)
